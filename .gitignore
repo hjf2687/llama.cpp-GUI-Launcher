@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# llama.cpp 可执行文件（体积大，单独下载）
+llama-server.exe
+llama-cli.exe
+llama-completion.exe
+llama-bench.exe
+llama-quantize.exe
+llama-mtmd-cli.exe
+*.dll
+*.so
+*.dylib
+
+# 模型文件（体积巨大，不纳入版本控制）
+models/
+*.gguf
+*.bin
+
+# 运行时生成的配置（本地个性化配置，不纳入版本控制）
+launcher_config.json
+
+# 日志文件
+*.log
+
+# 测试脚本中引用的本地路径
+test_multimodal_api.py
+quick_test.py
