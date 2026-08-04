@@ -21,12 +21,14 @@ import json
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox, filedialog
+from tkinter import ttk, scrolledtext, messagebox, filedialog, simpledialog
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import signal
 import time
 import re
+
+from preset_manager import PresetManager, DEFAULT_SAMPLING
 
 
 class ScrollableFrame(ttk.Frame):
@@ -114,6 +116,9 @@ class LlamaLauncher:
         self.config_file = Path(__file__).parent / "launcher_config.json"
         self.config = self.load_config()
 
+        # 模型预设管理器（每个模型独立的多预设采样参数配置）
+        self.preset_manager = PresetManager()
+
         # GPU 信息缓存
         self.gpu_info = self.detect_gpu()
 
@@ -166,7 +171,6 @@ class LlamaLauncher:
             "presence_penalty": 0.0,
             # 其他参数
             "seed": -1,
-            "system_prompt": "",
             "chat_template": "",
             "jinja": False,
             "n_cpu_moe": -1,
@@ -213,7 +217,6 @@ class LlamaLauncher:
             self.config["repeat_penalty"] = self.repeat_penalty_var.get()
             self.config["frequency_penalty"] = self.freq_penalty_var.get()
             self.config["presence_penalty"] = self.presence_penalty_var.get()
-            self.config["system_prompt"] = self.system_prompt_var.get()
             self.config["chat_template"] = self.chat_template_var.get()
             self.config["embedding_model"] = self.emb_model_var.get()
             self.config["embedding_port"] = self.emb_port_var.get()
@@ -222,6 +225,13 @@ class LlamaLauncher:
                 str(Path(m["path"]).parent) for m in self.models if m.get("manual")
             ))
             self.config["manual_folders"] = manual_folders
+
+            # 同步当前模型的预设选择（不覆盖预设数值，预设值需显式点「保存预设」）
+            model = self._current_model()
+            if model:
+                name = self.preset_var.get()
+                if name and name in self.preset_manager.get_preset_names(model["path"]):
+                    self.preset_manager.set_current_preset(model["path"], name, model["display_name"])
 
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
@@ -811,8 +821,28 @@ class LlamaLauncher:
         sampling_frame = ttk.LabelFrame(parent, text="采样参数", padding="8")
         sampling_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 8))
 
+        # 预设管理行（每个模型独立的采样参数预设）
+        preset_bar = ttk.Frame(sampling_frame)
+        preset_bar.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 6))
+        ttk.Label(preset_bar, text="预设:").pack(side=tk.LEFT)
+        self.preset_var = tk.StringVar()
+        self.preset_combo = ttk.Combobox(
+            preset_bar,
+            textvariable=self.preset_var,
+            values=[],
+            state="readonly",
+            width=16
+        )
+        self.preset_combo.pack(side=tk.LEFT, padx=(5, 5))
+        self.preset_combo.bind("<<ComboboxSelected>>", self.on_preset_selected)
+        ttk.Button(preset_bar, text="💾 保存", command=self.save_preset_dialog).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(preset_bar, text="🗑 删除", command=self.delete_preset).pack(side=tk.LEFT)
+
+        self.preset_status_label = ttk.Label(sampling_frame, text="", foreground="gray")
+        self.preset_status_label.grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(0, 6))
+
         # 温度
-        ttk.Label(sampling_frame, text="温度 (--temp):").grid(row=0, column=0, sticky=tk.W, pady=2)
+        ttk.Label(sampling_frame, text="温度 (--temp):").grid(row=2, column=0, sticky=tk.W, pady=2)
         self.temp_var = tk.DoubleVar(value=self.config["temperature"])
         temp_spin = ttk.Spinbox(
             sampling_frame,
@@ -823,11 +853,11 @@ class LlamaLauncher:
             width=12,
             format="%.2f"
         )
-        temp_spin.grid(row=0, column=1, sticky=tk.W, padx=(5, 0), pady=2)
-        ttk.Label(sampling_frame, text="(0=精确, 2=随机)").grid(row=0, column=2, sticky=tk.W, padx=(5, 0), pady=2)
+        temp_spin.grid(row=2, column=1, sticky=tk.W, padx=(5, 0), pady=2)
+        ttk.Label(sampling_frame, text="(0=精确, 2=随机)").grid(row=2, column=2, sticky=tk.W, padx=(5, 0), pady=2)
 
         # Top-p
-        ttk.Label(sampling_frame, text="Top-p:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        ttk.Label(sampling_frame, text="Top-p:").grid(row=3, column=0, sticky=tk.W, pady=2)
         self.top_p_var = tk.DoubleVar(value=self.config["top_p"])
         top_p_spin = ttk.Spinbox(
             sampling_frame,
@@ -838,10 +868,10 @@ class LlamaLauncher:
             width=12,
             format="%.2f"
         )
-        top_p_spin.grid(row=1, column=1, sticky=tk.W, padx=(5, 0), pady=2)
+        top_p_spin.grid(row=3, column=1, sticky=tk.W, padx=(5, 0), pady=2)
 
         # Top-k
-        ttk.Label(sampling_frame, text="Top-k:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        ttk.Label(sampling_frame, text="Top-k:").grid(row=4, column=0, sticky=tk.W, pady=2)
         self.top_k_var = tk.IntVar(value=self.config["top_k"])
         top_k_spin = ttk.Spinbox(
             sampling_frame,
@@ -850,10 +880,10 @@ class LlamaLauncher:
             textvariable=self.top_k_var,
             width=12
         )
-        top_k_spin.grid(row=2, column=1, sticky=tk.W, padx=(5, 0), pady=2)
+        top_k_spin.grid(row=4, column=1, sticky=tk.W, padx=(5, 0), pady=2)
 
         # Min-p
-        ttk.Label(sampling_frame, text="Min-p:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        ttk.Label(sampling_frame, text="Min-p:").grid(row=5, column=0, sticky=tk.W, pady=2)
         self.min_p_var = tk.DoubleVar(value=self.config["min_p"])
         min_p_spin = ttk.Spinbox(
             sampling_frame,
@@ -864,10 +894,10 @@ class LlamaLauncher:
             width=12,
             format="%.2f"
         )
-        min_p_spin.grid(row=3, column=1, sticky=tk.W, padx=(5, 0), pady=2)
+        min_p_spin.grid(row=5, column=1, sticky=tk.W, padx=(5, 0), pady=2)
 
         # 重复惩罚
-        ttk.Label(sampling_frame, text="重复惩罚:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        ttk.Label(sampling_frame, text="重复惩罚:").grid(row=6, column=0, sticky=tk.W, pady=2)
         self.repeat_penalty_var = tk.DoubleVar(value=self.config["repeat_penalty"])
         repeat_spin = ttk.Spinbox(
             sampling_frame,
@@ -878,11 +908,11 @@ class LlamaLauncher:
             width=12,
             format="%.2f"
         )
-        repeat_spin.grid(row=4, column=1, sticky=tk.W, padx=(5, 0), pady=2)
-        ttk.Label(sampling_frame, text="(1.0=关闭)").grid(row=4, column=2, sticky=tk.W, padx=(5, 0), pady=2)
+        repeat_spin.grid(row=6, column=1, sticky=tk.W, padx=(5, 0), pady=2)
+        ttk.Label(sampling_frame, text="(1.0=关闭)").grid(row=6, column=2, sticky=tk.W, padx=(5, 0), pady=2)
 
         # 频率惩罚
-        ttk.Label(sampling_frame, text="频率惩罚:").grid(row=5, column=0, sticky=tk.W, pady=2)
+        ttk.Label(sampling_frame, text="频率惩罚:").grid(row=7, column=0, sticky=tk.W, pady=2)
         self.freq_penalty_var = tk.DoubleVar(value=self.config["frequency_penalty"])
         freq_spin = ttk.Spinbox(
             sampling_frame,
@@ -893,10 +923,10 @@ class LlamaLauncher:
             width=12,
             format="%.2f"
         )
-        freq_spin.grid(row=5, column=1, sticky=tk.W, padx=(5, 0), pady=2)
+        freq_spin.grid(row=7, column=1, sticky=tk.W, padx=(5, 0), pady=2)
 
         # 存在惩罚
-        ttk.Label(sampling_frame, text="存在惩罚:").grid(row=6, column=0, sticky=tk.W, pady=2)
+        ttk.Label(sampling_frame, text="存在惩罚:").grid(row=8, column=0, sticky=tk.W, pady=2)
         self.presence_penalty_var = tk.DoubleVar(value=self.config["presence_penalty"])
         presence_spin = ttk.Spinbox(
             sampling_frame,
@@ -907,7 +937,7 @@ class LlamaLauncher:
             width=12,
             format="%.2f"
         )
-        presence_spin.grid(row=6, column=1, sticky=tk.W, padx=(5, 0), pady=2)
+        presence_spin.grid(row=8, column=1, sticky=tk.W, padx=(5, 0), pady=2)
 
         # ===== 多模态支持 =====
         multimodal_frame = ttk.LabelFrame(parent, text="多模态支持", padding="8")
@@ -975,32 +1005,20 @@ class LlamaLauncher:
         seed_spin.grid(row=4, column=1, sticky=tk.W, padx=(5, 0), pady=2)
         ttk.Label(advanced_frame, text="(-1=随机)").grid(row=4, column=2, sticky=tk.W, padx=(5, 0), pady=2)
 
-        # ===== 系统提示词 & 聊天模板 =====
-        prompt_frame = ttk.LabelFrame(parent, text="系统提示词 & 聊天模板", padding="8")
+        # ===== 聊天模板 =====
+        prompt_frame = ttk.LabelFrame(parent, text="聊天模板", padding="8")
         prompt_frame.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 8))
         prompt_frame.columnconfigure(1, weight=1)
 
-        # 系统提示词
-        ttk.Label(prompt_frame, text="系统提示词:").grid(row=0, column=0, sticky=tk.W, pady=2)
-        self.system_prompt_var = tk.StringVar(value=self.config.get("system_prompt", ""))
-        system_prompt_entry = ttk.Entry(
-            prompt_frame,
-            textvariable=self.system_prompt_var,
-            width=50
-        )
-        system_prompt_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
-        ttk.Label(prompt_frame, text="(-sp 参数)", foreground="gray").grid(
-            row=0, column=2, sticky=tk.W, padx=(5, 0), pady=2)
-
         # 聊天模板文件
-        ttk.Label(prompt_frame, text="聊天模板文件:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        ttk.Label(prompt_frame, text="聊天模板文件:").grid(row=0, column=0, sticky=tk.W, pady=2)
         self.chat_template_var = tk.StringVar(value=self.config.get("chat_template", ""))
         chat_template_entry = ttk.Entry(
             prompt_frame,
             textvariable=self.chat_template_var,
             width=50
         )
-        chat_template_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
+        chat_template_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
 
         # 浏览按钮
         def browse_chat_template():
@@ -1016,7 +1034,7 @@ class LlamaLauncher:
             text="📂",
             command=browse_chat_template,
             width=3
-        ).grid(row=1, column=2, padx=(5, 0), pady=2)
+        ).grid(row=0, column=2, padx=(5, 0), pady=2)
 
     def create_embedding_widgets(self, parent):
         """创建 Embedding 配置组件"""
@@ -1471,6 +1489,158 @@ class LlamaLauncher:
 
             self.update_server_frame_visibility()
 
+            # 自动加载该模型的采样参数预设
+            self._load_model_presets()
+
+    # ======================== 模型预设管理 ========================
+
+    def _current_model(self) -> Optional[Dict]:
+        """返回当前下拉框选中的模型信息"""
+        selection = self.model_combo.current()
+        if 0 <= selection < len(self.models):
+            return self.models[selection]
+        return None
+
+    def _sampling_params_from_vars(self) -> Dict:
+        """从采样参数 UI 读取当前值"""
+        return {
+            "temperature": self.temp_var.get(),
+            "top_p": self.top_p_var.get(),
+            "top_k": self.top_k_var.get(),
+            "min_p": self.min_p_var.get(),
+            "repeat_penalty": self.repeat_penalty_var.get(),
+            "frequency_penalty": self.freq_penalty_var.get(),
+            "presence_penalty": self.presence_penalty_var.get(),
+        }
+
+    def _apply_sampling_params(self, params: Dict):
+        """把预设参数应用到采样参数 UI"""
+        if not params:
+            return
+        self.temp_var.set(params.get("temperature", 0.8))
+        self.top_p_var.set(params.get("top_p", 0.9))
+        self.top_k_var.set(int(params.get("top_k", 40)))
+        self.min_p_var.set(params.get("min_p", 0.05))
+        self.repeat_penalty_var.set(params.get("repeat_penalty", 1.1))
+        self.freq_penalty_var.set(params.get("frequency_penalty", 0.0))
+        self.presence_penalty_var.set(params.get("presence_penalty", 0.0))
+
+    def _refresh_preset_combo(self):
+        """刷新预设下拉框列表并选中当前预设，返回预设名列表"""
+        model = self._current_model()
+        if not model:
+            self.preset_combo["values"] = []
+            self.preset_var.set("")
+            return []
+        names = self.preset_manager.get_preset_names(model["path"])
+        self.preset_combo["values"] = names
+        current = self.preset_manager.get_current_preset_name(model["path"])
+        if current:
+            self.preset_var.set(current)
+        elif names:
+            self.preset_var.set(names[0])
+        else:
+            self.preset_var.set("")
+        return names
+
+    def _load_model_presets(self):
+        """切换模型时调用：自动加载该模型的当前预设（无预设则用默认采样参数）"""
+        model = self._current_model()
+        if not model:
+            return
+        model_key = model["path"]
+        display = model["display_name"]
+
+        # 仅当该模型从未有过任何预设记录时，按模型名自动创建推荐预设
+        # （用户删除全部预设后不会再次自动创建，避免推荐预设"复活"）
+        if not self.preset_manager.has_model_entry(model_key):
+            if self.preset_manager.create_recommended_presets(model_key, display):
+                name = self.preset_manager.get_current_preset_name(model_key)
+                params = self.preset_manager.get_preset_params(model_key, name)
+                self._apply_sampling_params(params)
+                self._refresh_preset_combo()
+                self.preset_status_label.config(
+                    text=f"已按官方推荐自动创建预设「{name}」（可修改或删除）", foreground="green")
+                return
+
+        names = self.preset_manager.get_preset_names(model_key)
+        if names:
+            name = self.preset_manager.get_current_preset_name(model_key) or names[0]
+            params = self.preset_manager.get_preset_params(model_key, name)
+            self._apply_sampling_params(params)
+            self._refresh_preset_combo()
+            self.preset_status_label.config(text=f"已加载预设「{name}」", foreground="green")
+        else:
+            # 无预设：使用标准默认采样参数（不依赖上次保存的全局值）
+            self._apply_sampling_params(DEFAULT_SAMPLING)
+            self._refresh_preset_combo()
+            self.preset_status_label.config(
+                text="该模型暂无预设，调整参数后点「保存预设」", foreground="orange")
+
+    def on_preset_selected(self, event=None):
+        """预设下拉框选择事件：应用选中的预设并设为当前预设"""
+        model = self._current_model()
+        if not model:
+            return
+        name = self.preset_var.get()
+        if not name:
+            return
+        if self.preset_manager.set_current_preset(model["path"], name, model["display_name"]):
+            params = self.preset_manager.get_preset_params(model["path"], name)
+            if params:
+                self._apply_sampling_params(params)
+                self.preset_status_label.config(text=f"已应用预设「{name}」", foreground="green")
+
+    def save_preset_dialog(self):
+        """把当前采样参数保存为该模型的一个预设"""
+        model = self._current_model()
+        if not model:
+            messagebox.showwarning("提示", "请先选择模型")
+            return
+        name = simpledialog.askstring(
+            "保存预设",
+            "输入预设名称（输入已存在的名称将覆盖）:",
+            initialvalue=self.preset_var.get() or "默认",
+            parent=self.root
+        )
+        if name is None:
+            return
+        name = name.strip()
+        if not name:
+            messagebox.showwarning("提示", "预设名称不能为空")
+            return
+        params = self._sampling_params_from_vars()
+        self.preset_manager.save_preset(model["path"], name, params, model["display_name"])
+        self._refresh_preset_combo()
+        self.preset_status_label.config(text=f"已保存预设「{name}」", foreground="green")
+
+    def delete_preset(self):
+        """删除当前选中的预设"""
+        model = self._current_model()
+        if not model:
+            return
+        name = self.preset_var.get()
+        if not name:
+            messagebox.showwarning("提示", "请先选择一个预设再删除")
+            return
+        if not messagebox.askyesno("删除预设", f"确定删除模型预设「{name}」吗？"):
+            return
+        if self.preset_manager.delete_preset(model["path"], name):
+            remaining = self.preset_manager.get_preset_names(model["path"])
+            if remaining:
+                # 删除后自动切换到剩余的第一个预设并重载参数，保证 UI 与磁盘一致
+                new_name = self.preset_manager.get_current_preset_name(model["path"]) or remaining[0]
+                params = self.preset_manager.get_preset_params(model["path"], new_name)
+                self._apply_sampling_params(params)
+                self._refresh_preset_combo()
+                self.preset_status_label.config(
+                    text=f"已删除预设「{name}」，已切换至「{new_name}」", foreground="orange")
+            else:
+                self._apply_sampling_params(DEFAULT_SAMPLING)
+                self._refresh_preset_combo()
+                self.preset_status_label.config(
+                    text=f"已删除预设「{name}」，该模型现无预设", foreground="orange")
+
     def on_mode_change(self):
         """启动模式改变事件"""
         self.update_server_frame_visibility()
@@ -1740,11 +1910,6 @@ class LlamaLauncher:
             seed = self.seed_var.get()
             if seed != -1:
                 args.extend(["-s", str(seed)])
-
-            # 系统提示词
-            system_prompt = self.system_prompt_var.get().strip()
-            if system_prompt:
-                args.extend(["-sp", system_prompt])
 
             # 聊天模板
             chat_template = self.chat_template_var.get().strip()

@@ -18,8 +18,9 @@
 | 🎮 **GPU 加速** | 自动检测 NVIDIA GPU 显存，支持配置 GPU 卸载层数 |
 | 🌐 **端口管理** | 自动检测端口占用状态，一键打开 Web UI |
 | 🎛️ **采样参数** | 温度、Top-p、Top-k、Min-p、重复惩罚等完整采样控制 |
+| 📚 **采样预设** | 每个模型独立的采样参数预设，一键保存/切换/删除，切换模型自动加载 |
 | 🔐 **API 密钥** | 服务器模式支持 API 密钥认证 |
-| 💬 **系统提示词** | 支持自定义系统提示词和聊天模板 |
+| 💬 **聊天模板** | 支持自定义聊天模板文件（--chat-template-file） |
 | 🌙 **深色模式** | 支持深色/浅色主题切换，配置自动保存 |
 | 📊 **日志高亮** | 错误/警告/信息/成功四级颜色高亮显示 |
 | 🔍 **启动前检查** | 自动验证模型文件、端口状态、进程冲突 |
@@ -49,9 +50,11 @@
 ### 目录结构
 
 ```
-llama.cpp-launcher/
+llama.cpp-GUI-Launcher/
 ├── llama_launcher.py      # 主程序
+├── preset_manager.py      # 模型采样预设管理器
 ├── launcher_config.json   # 配置文件（自动生成）
+├── model_presets.json     # 采样预设数据（自动生成）
 ├── START_HERE.bat         # Windows 一键启动脚本
 ├── test_launcher.py       # 功能测试
 ├── models/                # 模型目录（需自行放置）
@@ -68,7 +71,7 @@ llama.cpp-launcher/
 1. **克隆项目**
 
    ```bash
-   git clone https://github.com/your-username/llama.cpp-launcher.git
+   git clone https://github.com/hjf2687/llama.cpp-GUI-Launcher.git
    cd llama.cpp-launcher
    ```
 
@@ -126,6 +129,17 @@ llama.cpp-launcher/
 
 手动添加的文件夹会自动保存到配置文件中，下次启动时无需重新选择。
 
+### 采样预设
+
+每个模型拥有**独立的采样参数预设集合**，切换模型时自动加载该模型上次使用的预设：
+
+1. 在「采样参数」区域顶部选择或创建预设
+2. 调整温度、Top-p 等采样参数后，点击「💾 保存」将当前参数保存为预设
+3. 通过下拉框在预设间切换，点击「🗑 删除」移除不需要的预设
+4. 首次选择模型且无预设时，会根据模型规模（35B / 9B / 4B）自动创建推荐预设
+
+预设数据保存在 `model_presets.json`，与全局配置相互独立。
+
 ### 多模态功能
 
 多模态功能允许模型理解图像内容。使用方法：
@@ -174,11 +188,13 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   "last_mode": "server",
   "gpu_layers": "auto",
   "threads": -1,
+  "threads_batch": -1,
   "ctx_size": 8192,
   "batch_size": 2048,
   "ubatch_size": 512,
   "host": "127.0.0.1",
   "port": 8080,
+  "api_key": "",
   "flash_attention": "auto",
   "multimodal_enabled": false,
   "kv_cache_type": "f16",
@@ -188,7 +204,10 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   "dark_mode": false,
   "manual_folders": [],
   "embedding_model": "",
-  "embedding_port": 8081
+  "embedding_port": 8081,
+  "chat_template": "",
+  "jinja": false,
+  "n_cpu_moe": -1
 }
 ```
 
@@ -222,12 +241,13 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 | `repeat_penalty` | float | `1.1` | 重复惩罚（1.0=关闭） |
 | `frequency_penalty` | float | `0.0` | 频率惩罚 |
 | `presence_penalty` | float | `0.0` | 存在惩罚 |
-| `system_prompt` | string | `""` | 系统提示词（-sp 参数） |
 | `chat_template` | string | `""` | 聊天模板文件路径 |
 | `dark_mode` | bool | `false` | 深色模式 |
 | `manual_folders` | array | `[]` | 手动添加的模型文件夹路径列表 |
 | `embedding_model` | string | `""` | Embedding 模型显示名 |
 | `embedding_port` | int | `8081` | Embedding 服务器端口 |
+| `embedding_enabled` | bool | `false` | 是否启用 Embedding 服务器 |
+| `manual_models` | array | `[]` | 手动添加的模型文件路径列表 |
 
 ## 🔧 测试
 
@@ -242,6 +262,7 @@ py test_launcher.py
 - ✅ 可执行文件检测
 - ✅ 配置管理
 - ✅ 命令生成
+- ✅ 模型预设管理
 
 ## ❓ 常见问题
 

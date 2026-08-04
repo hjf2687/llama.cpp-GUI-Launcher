@@ -5,10 +5,19 @@
 
 import sys
 import os
+import json
+import tempfile
 from pathlib import Path
 
 # 添加当前目录到路径
 sys.path.insert(0, str(Path(__file__).parent))
+
+from preset_manager import (
+    PresetManager,
+    SAMPLING_KEYS,
+    match_recommended_presets,
+    _match_recommend_token,
+)
 
 def test_model_scanning():
     """测试模型扫描功能"""
@@ -139,6 +148,98 @@ def test_command_generation():
     return True
 
 
+def test_preset_manager():
+    """测试每个模型的独立预设管理"""
+    print("\n测试模型预设管理...")
+
+    model_a = "D:/models/Qwen3.6-35B-A3B-Q4_K_M.gguf"
+    model_b = "D:/models/Qwen3.5-9B-Q4_K_M.gguf"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pm_path = Path(tmp) / "model_presets.json"
+        pm = PresetManager(str(pm_path))
+
+        # 1. 保存预设（模型A 两个预设，模型B 一个预设）
+        pm.save_preset(model_a, "思考-概述",
+                       {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
+                        "repeat_penalty": 1.1, "frequency_penalty": 0.0, "presence_penalty": 1.5},
+                       "Qwen3.6-35B")
+        pm.save_preset(model_a, "思考-编码",
+                       {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
+                        "repeat_penalty": 1.1, "frequency_penalty": 0.0, "presence_penalty": 0.0},
+                       "Qwen3.6-35B")
+        pm.save_preset(model_b, "思考模式",
+                       {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
+                        "repeat_penalty": 1.1, "frequency_penalty": 0.0, "presence_penalty": 0.0},
+                       "Qwen3.5-9B")
+
+        # 2. 两个模型的预设互相独立
+        assert pm.get_preset_names(model_a) == ["思考-概述", "思考-编码"], pm.get_preset_names(model_a)
+        assert pm.get_preset_names(model_b) == ["思考模式"], pm.get_preset_names(model_b)
+
+        # 3. 保存后自动设为当前预设
+        assert pm.get_current_preset_name(model_a) == "思考-编码"
+        assert pm.get_current_preset_name(model_b) == "思考模式"
+
+        # 4. 读取预设参数
+        params = pm.get_preset_params(model_a, "思考-概述")
+        assert params["temperature"] == 1.0 and params["presence_penalty"] == 1.5
+        assert set(SAMPLING_KEYS) <= set(params.keys())  # 键完整
+
+        # 5. 覆盖同名预设
+        pm.save_preset(model_a, "思考-概述",
+                       {"temperature": 0.9, "top_p": 0.9, "top_k": 30, "min_p": 0.0,
+                        "repeat_penalty": 1.1, "frequency_penalty": 0.0, "presence_penalty": 1.0},
+                       "Qwen3.6-35B")
+        assert pm.get_preset_params(model_a, "思考-概述")["temperature"] == 0.9
+
+        # 6. 切换当前预设
+        assert pm.set_current_preset(model_a, "思考-概述") is True
+        assert pm.get_current_preset_name(model_a) == "思考-概述"
+        assert pm.set_current_preset(model_a, "不存在的预设") is False
+
+        # 7. 删除非当前预设；再删除当前预设后自动切到剩余第一个
+        pm.save_preset(model_b, "非思考模式",
+                       {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0,
+                        "repeat_penalty": 1.1, "frequency_penalty": 0.0, "presence_penalty": 0.0},
+                       "Qwen3.5-9B")
+        assert pm.delete_preset(model_b, "思考模式") is True
+        assert pm.get_current_preset_name(model_b) == "非思考模式"
+
+        # 8. 持久化：重新加载文件
+        pm2 = PresetManager(str(pm_path))
+        assert pm2.get_preset_names(model_a) == ["思考-概述", "思考-编码"]
+        assert pm2.get_current_preset_name(model_a) == "思考-概述"
+        assert pm2.get_preset_params(model_a, "思考-编码")["temperature"] == 0.6
+
+        # 9. 推荐预设匹配
+        assert match_recommended_presets("Qwen3.6-35B-A3B-Q4_K_M") is not None
+        assert match_recommended_presets("Qwen3.5-9B-Q4_K_M") is not None
+        assert match_recommended_presets("Qwen3.5-4B-Q4_K_M") is not None
+        assert match_recommended_presets("Qwen2.5-7B-Q4_K_M") is None
+        assert match_recommended_presets("Qwen0.4B") is None  # 0.4B 不应误判为 4B
+        # token 精确匹配（GLM-4-9B 应命中 9B 而非 4B）
+        assert _match_recommend_token("Qwen3.6-35B-A3B-Q4_K_M") == "35B"
+        assert _match_recommend_token("Qwen3.5-9B-Q4_K_M") == "9B"
+        assert _match_recommend_token("Qwen3.5-4B-Q4_K_M") == "4B"
+        assert _match_recommend_token("GLM-4-9B-Q4_K_M") == "9B"
+        assert _match_recommend_token("Qwen0.4B") is None
+
+        # 10. 删除全部预设后不会自动重建推荐预设（避免"复活"）
+        pm.delete_preset(model_b, "非思考模式")
+        assert pm.get_preset_names(model_b) == []
+        assert pm.create_recommended_presets(model_b, "Qwen3.5-9B-Q4_K_M") is False
+        # 从未出现过的新模型才会创建推荐预设
+        model_c = "D:/models/Qwen3.5-9B-Other.gguf"
+        assert pm.create_recommended_presets(model_c, "Qwen3.5-9B-Q4_K_M") is True
+        assert "思考模式" in pm.get_preset_names(model_c)
+        # 已有预设时不重复创建
+        assert pm.create_recommended_presets(model_c, "Qwen3.5-9B-Q4_K_M") is False
+
+    print("[OK] 模型预设管理功能正常")
+    return True
+
+
 def main():
     """主测试函数"""
     print("=" * 50)
@@ -152,6 +253,7 @@ def main():
     results.append(("可执行文件", test_executables()))
     results.append(("配置管理", test_config()))
     results.append(("命令生成", test_command_generation()))
+    results.append(("模型预设管理", test_preset_manager()))
 
     # 显示结果
     print("\n" + "=" * 50)

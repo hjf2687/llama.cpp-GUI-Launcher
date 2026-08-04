@@ -41,9 +41,14 @@ models/
 
 # 运行时生成的配置（本地个性化配置，不纳入版本控制）
 launcher_config.json
+model_presets.json
 
 # 日志文件
 *.log
+
+# 开发工具配置
+.reasonix/
+reasonix.toml
 
 # 测试脚本中引用的本地路径
 test_multimodal_api.py
